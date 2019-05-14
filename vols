@@ -1,0 +1,28 @@
+Volumes
+
+
+Volume per Index
+
+index=_internal source=*metrics.log | eval GB=kb/(1024*1024) | search group="per_sourcetype_thruput" | timechart span=1d sum(GB) by series limit=20
+
+Events per day
+
+| `licensing_epd` | stats sum(count) as count by _time | eval avg_eps=round(count/86400,1) | sort 0 -_time
+
+
+Events epr index
+
+| `licensing_epd` | eventstats max(_time) | where _time='max(_time)' | table _time,index,count | sort 0 - count
+
+
+Total volume per day
+
+index=_internal source=*license_usage.log type="RolloverSummary" | eval _time=_time - 43200 | bin _time span=1d | stats latest(b) AS b latest(stacksz) AS stacksz by slave, pool, _time | timechart span=1d eval(round(sum(b)/1073741824,2)) AS "Volume used" eval(round(max(stacksz)/1073741824,2)) AS "License Volume" fixedrange=false
+
+Top 10 Hosts by Indexed Volume (MB) GRAPH
+
+index=_internal sourcetype=splunkd source=*license_usage* type=Usage | fields _time h b | bucket _time span=30min | stats sum(b) as volume by _time h | eventstats sum(volume) as total by h | sort -total | streamstats dc(h) as rank | where rank<11 | timechart sum(eval(volume/1048576)) by h
+
+Top ten hosts by indexed volume (MB) STATS
+
+index=_internal sourcetype=splunkd source=*license_usage* type=Usage | fields _time h b | bucket _time span=1h | stats sum(b) as volume by _time h | eventstats sum(volume) as total by h | sort -total | streamstats dc(h) as rank | where rank<11 | eventstats max(volume) as peak avg(volume) as avgs by h | dedup h | fields h total avgs peak | eval total=tostring(round(total/1048576),"commas") | eval avgs=tostring(round(avgs/1048576),"commas") | eval peak=tostring(round(peak/1048576),"commas") | fields - _time | rename h as "Log Source (Host)", total as "Total Volume Indexed (MB)", avgs as "Average Volume Indexed (MB)", peak as "Peak Volume Indexed (MB/hr)"
