@@ -73,4 +73,37 @@ index=_audit sourcetype=audittrail) OR (index=_internal sourcetype=splunk_web_se
 | eval "Disk Used MB"=round(diskused,3) 
 | fields - rawSizeTotal diskused
 
+ highest eps of the day of the month (two part query):
+
+#find which day was the highest of a specific month
+| tstats count WHERE index=* OR sourcetype=* by _time host 
+| bucket _time span=30m 
+| stats dc(host) by _time
+
+
+#search the specific day that was found to be the highest eps of the month
+| tstats count AS "Events" where index=* OR index=_* OR host=* by host
+| fillnull value=0 
+| sort - Events
+| lookup assets nt_host as Description OUTPUT Device_Description 
+| eval eps = round((Events/86400),2) 
+| table host Description Events eps
  
+ 
+#eps per host
+| tstats count AS "Events" where index=* OR index=_* OR host=* by host
+| fillnull value=0 
+| sort - Events
+| lookup assets nt_host as Description OUTPUT Device_Description 
+| eval eps = round((Events/86400),2) 
+| table host Description Events eps
+ 
+ #avg license [mb]
+index=_internal source=*license_usage.log type="Usage" 
+| eval megabytes=b/1024/1024 
+| timechart avg(megabytes)
+ 
+#usage chart by idx
+index=_internal sourcetype=splunkd source=*Usage* type=Usage 
+| eval Gb=round(B/1073741824,2) 
+| timechart useother=f usenull=f span=1h sum(b) as B by idx
