@@ -1,0 +1,76 @@
+ 
+#who has access to indexes
+ | rest /services/authentication/users splunk_server=local 
+| table title roles 
+| rename title as user 
+| rename roles as title 
+| mvexpand title 
+| join type=left max=0 title 
+    [| rest /services/authorization/roles splunk_server=local 
+    | table title srchInd* 
+    | eval indexes=mvappend(srchIndexesAllowed,srchIndexesDefault) 
+    | table title indexes 
+    | mvexpand indexes 
+    | dedup title indexes 
+    | eval indexes_orig=indexes 
+    | join indexes max=0 type=left 
+        [| rest /services/data/indexes 
+        | stats count by title 
+        | table title 
+        | eval indexes=if(match(title,"^_"),"_*","*") 
+        | rename title as indexes_new] 
+    | eval indexes=if(indexes_orig!=indexes_new,indexes_new, indexes_orig) 
+    | table title indexes]
+    
+    
+    #diff between two indexes
+ index=_internal OR index=_audit 
+ | eval internal_count=if(index="_internal", 1, null()) 
+ | eval audit_count=if(index="_audit", 1, null()) 
+ | stats sum(internal_count) AS internal sum(audit_count) AS audit 
+ | eval diff=internal-audit
+    
+    
+ #buckets in indexs, events, disk size, raw data size:
+| dbinspect index=* 
+| fields bucketId endEpoch eventCount sizeOnDiskMB startEpoch index rawSize 
+| where endEpoch > relative_time(now(), "-1d@d") 
+| stats min(startEpoch) as startEpoch max(endEpoch) as endEpoch sum(eventCount) as EventCount sum(sizeOnDiskMB) as "Size On Disk (MB)" sum(rawSize) as rSize by index 
+| eval "Raw Data Size (MB)"=round(rSize/1024/1024,2) 
+| eval "Size On Disk (MB)"=round('Size On Disk (MB)',2) 
+| eval "Time Range (hrs)" = round((endEpoch - startEpoch)/3600,2) 
+| eval "End Time"=strftime(endEpoch,"%x %X") 
+| eval "Start Time"=strftime(startEpoch,"%x %X") 
+| table index "Start Time" "End Time" "Time Range (hrs)" EventCount "Raw Data Size (MB)" "Size On Disk (MB)"   
+    
+    
+#license usage after retention is over:
+index=* OR index=_* 
+| eval bytes=len(_raw) 
+| stats sum(eval(bytes/1024/1024)) as mb, by index sourcetype
+
+
+#avg license per hour [GB]
+index=_internal* source=*license_usage*
+| bucket _time span=1d
+| stats sum(b) as bytes by h _time
+| eval mb = (bytes / 1024 / 1024) 
+| eval avg = round(bytes/1024/1024,2)
+| stats sum(avg) as avg by h
+
+
+#internal splunk account logons (Tstamp: month to date)
+index=_audit sourcetype=audittrail) OR (index=_internal sourcetype=splunk_web_service) user=* 
+| rex "action=(?<newaction>\w+)" 
+| search newaction=login OR action=logout 
+| table _time, newaction, user, status
+
+#check which metadata/hot state of _*
+| dbinspect index=_* 
+| eval state=if(state=="hot" OR state=="warm","hot/warm",state) 
+| stats sum(rawSize) as rawSizeTotal sum(sizeOnDiskMB) as diskused by splunk_server index state 
+| eval "Raw Size MB"=round(rawSizeTotal/1024/1024,3) 
+| eval "Disk Used MB"=round(diskused,3) 
+| fields - rawSizeTotal diskused
+
+ 
