@@ -107,3 +107,352 @@ index=_internal source=*license_usage.log type="Usage"
 index=_internal sourcetype=splunkd source=*Usage* type=Usage 
 | eval Gb=round(B/1073741824,2) 
 | timechart useother=f usenull=f span=1h sum(b) as B by idx
+
+
+#findlicense usage from sec logs
+| file /opt/splunk/var/log/splunk/license_audit.log 
+| search LicenseManager-Audit todaysBytesIndexed 
+| kv 
+| eval totalGB=todaysBytesIndexed/1024/1024/1024 
+| timechart span=1d sum(totalGB)
+
+#find license past retention:
+*******************************************************
+index=bluecoat sourcetype=bluecoat* 
+| fields _raw 
+| eval esize=len(_raw) 
+| timechart span=1d count as count avg(esize) as avg 
+| eval bytes=count*avg 
+| eval GB = round(bytes/1024/1024/1024,5) 
+| fields - avg count
+
+#license usage spike
+index=_internal sourcetype=splunkd source=*license_usage* type=Usage 
+| fields _time h b warning
+| bucket _time span=30min 
+| stats sum(b) as volume by _time h 
+| eventstats sum(volume) as total by h 
+| sort -total 
+| streamstats dc(h) as rank 
+| where rank<11 
+| timechart span=30min sum(eval(volume/1048576)) by h
+| eval warning=2000
+
+
+#lic spike, top 50 
+index=_internal sourcetype=splunkd source=*license_usage* type=Usage 
+| fields _time h b warning
+| bucket _time span=30min 
+| stats sum(b) as volume by _time h 
+| eventstats sum(volume) as total by h 
+| sort -total 
+| timechart usenull=f useother=f limit=50 span=30min sum(eval(volume/1048576)) by h
+| eval warning=2000
+| rename warning as "License Usage Spike"
+
+********************18/06/26
+query for ALERT of license usage spike in % () --v2
+**********************************************
+index=_internal source=*license_usage.log* type=Usage 
+| bucket _time span=1d 
+| stats sum(b) as bytes by _time, pool 
+| eval GB = round(bytes/1024/1024/1024,5) 
+| eval quota=55
+| eval "%"=round(GB/quota*100,2) 
+| rename GB as "License in GB" 
+| eval info=if(%>,"Warning! Spike in license" (".hostcount.")", hostcount) 
+| where % > 55
+| eval note = "Investigate using 'License Analyzer' dashboard" 
+| eval _time = now() 
+| eval Time=strftime(_time,"%F %T %Z") 
+| table Time info note
+
+**************************
+^alert  v3
+************************
+index=_internal source=*license_usage.log* type=Usage 
+| bucket _time span=1d 
+| stats sum(b) as bytes by _time, pool 
+| eval GB = round(bytes/1024/1024/1024,5) 
+| eval quota=55
+| eval "LicensePercent"=round(GB/quota*100) 
+| rename GB as "License in GB" 
+| eval info=if (LicensePercent > 55, "Warning! Spike in License Usage (".LicensePercent."%)", LicensePercent) 
+| eval note = "Investigate using 'License Analyzer' dashboard" 
+| eval _time = now() 
+| eval Time=strftime(_time,"%F %T %Z") 
+| table Time info note
+*
+
+
+-------------------------------
+% change between sourcetypes:
+-------------------------------
+index=_internal sourcetype=splunkd source=*license_usage.log type=usage earliest=-1d@d 
+| eval day=if(_time>relative_time(now(),"@d"),"today","yesterday") 
+| chart sum(b) as usage by idx day 
+| eval today=round(today/1024/1024/1024,3) 
+| eval yesterday=round(yesterday/1024/1024/1024,3) 
+| eval percent_change=round((today-yesterday)*100/yesterday,2)
+
+------------------------------------
+ average license utilization per index for 30 days
+------------------------------------:
+index=_internal source=*license_usage.log* type="Usage" earliest=-30d@d latest=@d 
+ | fields _time, pool, idx, b
+ | eval idx=if(len(idx)=0 OR isnull(idx),"(UNKNOWN)",idx) 
+ | bin _time span=1d 
+ | stats sum(b) as b by _time, pool, idx 
+ | stats sum(b) AS volume by idx, _time
+ | stats avg(volume) AS avgVolume max(volume) AS maxVolume by idx 
+ | eval avgVolumeGB=round(avgVolume/1024/1024/1024,3) 
+ | eval maxVolumeGB=round(maxVolume/1024/1024/1024,3) 
+ | fields idx, avgVolumeGB, maxVolumeGB 
+ | rename avgVolumeGB AS "average" maxVolumeGB AS "peak" idx AS "Index"
+ 
+
+
+
+---------------------------------
+spikes on data on any host (in MB):
+-----------------------------------
+index=_internal source=*license_usage.log* type=Usage 
+| bucket span=1h _time 
+| stats sum(b) as usage by _time h 
+| eval usageMB=round(usage/1024/1024,3) 
+| rename h as host 
+| where usageMB >= 20 
+| lookup .csv host as host OUTPUT Description 
+| table _time host Description usageMB
+| head 10
+
+<b>-----> optional: | where usageMB >= 20 <-----</b>
+
+---------------------------------------------
+WIP: raw length of license usage by host 
+---------------------------------------------
+index=_internal source=*license_usage.log* type=Usage 
+| eval size=length(_raw)/(1024*1024) 
+| stats sum(size) as MB by HOST 
+| where MB>50
+
+OR
+
+index=_internal source=*license_usage.log* type=Usage 
+| bin span=1d _time 
+| stats sum(eval(len(_raw))) as TotalSize by _time
+
+-----------------------------------------
+WIP: personal new host reporting per host:
+-----------------------------------------
+| metadata type=hosts index=_* OR index=*
+ | where firstTime >= relative_time(now(), "-1d")
+ | convert timeformat="%Y-%m-%d %T" ctime(firstTime) as firstTime, ctime(lastTime) as lastTime, ctime(recentTime) as recentTime
+ | table host, firstTime, lastTime, recentTime, Count
+
+ 
+ 
+ ---------------------------------
+ checking index retention policy:
+ ---------------------------------
+| rest /services/data/indexes 
+| where disabled = 0 
+| eval currentDBSizeGB = round( currentDBSizeMB / 1024) 
+| where currentDBSizeGB > 0 
+| table splunk_server title summaryHomePath_expanded minTime maxTime currentDBSizeGB totalEventCount frozenTimePeriodInSecs Days coldToFrozenDir maxTotalDataSizeMB | eval Days = (frozenTimePeriodInSecs / 86400)
+| rename minTime AS earliest maxTime AS latest summaryHomePath_expanded AS index_path currentDBSizeGB AS index_size totalEventCount AS event_cnt frozenTimePeriodInSecs AS index_retention coldToFrozenDir AS index_path_frozen maxTotalDataSizeMB AS index_size_max title AS index
+
+
+***********************************************************************
+query to check licence usage in GB ++ specify time qualifier > 30 days:
+************************************************************************
+index=_internal source=*license_usage.log type="RolloverSummary" 
+| timechart sum(eval(round(b/1024/1024/1024))) AS GB 
+| eval license = 55
+
+***************************************************************
+total number of logs -use time qualifier as past three months:
+***************************************************************
+| tstats count AS "Events" where index=* OR host=* by _time span=1month
+
+
+
+devices reporting in last 7 days:
+-------------------------------
+index=_* source=*usage*
+| stats dc(h) as host values(h) as hostname
+| table host hostname
+
+OR***********
+
+| tstats count where index=* by host
+
+---------------------------------------
+graph of all hosts: 
+-----------------------------------
+index=* 
+| timechart usenull=f useother=f count by host
+
+
+hosts down ():
+------------------
+| tstats count WHERE index=* OR sourcetype=* by _time host | bucket _time span=30m | stats dc(host) by _time
+--------------------------------
+individuating:
+---------------------------l hosts repor----
+| tstats count WHERE index=* OR sourcetype=* by _time host 
+| bucket _time span=30m 
+| stats dc(host) values(host) by _time
+---------------------------------
+
+---------------------------------------
+individuating for all index/sourcetype:
+---------------------------------------
+| tstats values(host) AS Host, values(sourcetype) AS Sourcetype WHERE index=* by index
+
+
+finding exact hosts:
+------------------------------------
+| tstats values(host) as host count where index=* host=xxx by _time span=30m
+-----------------------------------------------------------------------------------------
+1. run first query 
+2. check to see when hosts stopped reporting at what time 
+3. export csv
+4. vlookup the difference
+5. create a report which hosts dropped
+
+-------------------------------------------------------------------------------------------
+finding IP to host:
+----------------------------------------
+| xxx.csv
+| search host=xxx
+| table ip host
+-----------------------------------------------
+CORRECT too few hosts reporting:
+------------------------------------------------
+| metadata type=hosts 
+| eval lastseen=round(now()-lastTime) 
+| eval Recent = round((lastseen/3600),2)
+| search Recent < 1 
+| stats count(host) as hostcount values(host) as hostname
+| eval note=if(hostcount<245,"Warning! Too few hosts (".hostcount.")",hostcount) 
+| fields note hostname
+
+****************************************************************************************
+finding what a host is:
+************************
+| tstats count WHERE index=_* OR sourcetype=* host=xxxx* by _time host 
+| stats dc(host) as HostCount values(host) as Hosts by _time 
+| lookup assets _host as Hosts OUTPUT Description 
+| table _time Hosts HostCount Description 
+
+***********************************************************************************************
+check index rentention period:
+********************************
+| rest /services/data/indexes 
+| where disabled = 0 
+| eval currentDBSizeGB = round( currentDBSizeMB / 1024) 
+| where currentDBSizeGB > 0 | eval Days = (frozenTimePeriodInSecs / 86400)
+| table splunk_server title summaryHomePath_expanded minTime maxTime currentDBSizeGB totalEventCount frozenTimePeriodInSecs Days coldToFrozenDir maxTotalDataSizeMB 
+| rename minTime AS earliest maxTime AS latest summaryHomePath_expanded AS index_path currentDBSizeGB AS index_size totalEventCount AS event_cnt frozenTimePeriodInSecs AS index_retention coldToFrozenDir AS index_path_frozen maxTotalDataSizeMB AS index_size_max title AS index
+
+****************************************
+(((If the problem is that events are expiring out of _internal or _telemetry while you still need them and you cannot extend the retention, you can create a summary index (which will be TINY) and schedule a saved search to run nightly that dumps a daily summary and you can search from that.)))
+*****************************************
+
+finding the apps listed in the search head:
+***********************************************************************
+ | REST /services/apps/local | search disabled=0 | table label version
+
+
+******checking events from index with 1hr time ranges + set time qualifier*****
+******************************************************
+| tstats count where index=bluecoat by _time span=1hr
+
+
+****
+check license in GB for each index/sourcetype:
+****************************************************************
+index=_internal source=*license_usage.log* type=Usage 
+| bucket span=1d _time 
+| stats sum(b) as bytes by _time idx 
+| eval gb=round(bytes/1024/1024/1024,3) 
+| fields - bytes 
+| append 
+    [| gentimes start=-1 
+    | addinfo 
+    | eval t=mvrange(info_min_time,info_max_time,86400) 
+    | table t 
+    | mvexpand t 
+    | rename t as _time 
+    | bucket span=1d _time 
+    | eval gb=0 
+    | join type=left max=0 gb 
+        [| rest /services/data/indexes 
+        | table title 
+        | rename title as idx 
+        | eval gb=0]] 
+| stats max(gb) as gb by _time idx
+
+************************************************************
+
+
+************************************************************
+predict license usage:
+************************************************************
+earliest=-30d@d latest=-0d@d index=_internal sourcetype=splunkd source="/opt/splunk/var/log/splunk/license_usage.log" type=Usage 
+| fields b 
+| timechart span=1d sum(b) AS b 
+| predict b future_timespan=365
+************************************************************
+
+
+
+
+sourcetype="cisco:asa" dest_port=22 
+ | stats count by src_ip, dest_ip 
+ | eventstats avg(count) as avg stdev(count) as stdev by src_ip
+ | eval lower_bound=avg-(stdev*2)
+ | eval upper_bound=avg+(stdev*2)
+ | eval isOutlier=if(count>upper_bound OR count<lower_bound,10,0)
+ 
+ 
+ 
+ 
+ #curve
+ | makeresults count=50000 
+| eval r = random() / (pow(2,31)-1) 
+| eval r2 = random() / (pow(2,31)-1) 
+| eval normal = sqrt(-2 * ln(r)) * cos(2 * pi() * r2) 
+| bin normal span=0.1 
+| stats count by normal 
+| makecontinuous normal
+
+
+#sz distro of high vol bucketssss
+| dbinspect
+    [   
+	| rest /services/data/indexes         
+	| eval index=title         
+	| stats values(maxDataSize) as maxDataSize by index         
+	| where maxDataSize="auto_high_volume"         
+	| eval index="index=".index         
+	| stats values(index) as indexes         
+	| mvcombine delim=" " indexes        
+	| eval search=indexes ]  
+| bin sizeOnDiskMB span=2log4  
+| chart limit=0 count by sizeOnDiskMB index
+
+
+#how many days in the month
+| makeresults   
+| eval days_in_month=mvindex(split(if(tonumber(strftime(_time,"%y"))%4=0,"31,29,31,30,31,30,31,31,30,31,30,31","31,28,31,30,31,30,31,31,30,31,30,31"),","),tonumber(strftime(_time,"%m"))-1)
+
+
+
+#splunk server time
+* 
+| head 1 
+| eval tnow = now() 
+| fieldformat tnow=strftime(tnow, "%c %Z") 
+| table tnow
