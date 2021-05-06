@@ -21,7 +21,7 @@ index=botsv1 earliest=0
 
 
 
-#returns sourcetypes+evnt count + search for logins (login) or (cloudtrail)
+#returns sourcetypes+ evnt count + search for logins (login) or (cloudtrail)
 | metasearch index=* sourcetype=aws:*
 | fields user*
 | head 1000
@@ -43,6 +43,7 @@ index=* sourcetype=aws:cloudtrail user_type=*IAMUser*
 | metasearch index=* sourcetype=aws:cloudtrail
 
 #part 2 for extracted fields
+# `highlevel`
 | index=* sourcetype=aws:cloudtrail
 | head 1000
 | fieldsummary
@@ -55,7 +56,7 @@ index=* sourcetype=aws:cloudtrail user_type=*IAMUser*
 #throw into macro
 settings>advanced search>search macros>new search macros
 name:highlevel
-definition: Code
+definition: <splnk query>
 save.
 
 #example of highlevel
@@ -68,5 +69,311 @@ save.
 #check aws cloudtrail + exclude console login activity + find if MFA is used
 index=* sourcetype=aws:cloudtrail additionalEventData.MFAUser=* OR userIdentity.sessionContext.attributes.mfaAuthenticated=*
 | stats values(additionalEventData.MFAUser) values(userIdentity.sessionContext.attributes.mfaAuthenticated) by eventType
+
+
+
+#what is the processes number used on webserver
+#E5-2526
+
+#hardware, osquery, interfaces, cpu
+| metasearch index=* sourcetype=hardware
+
+#check aws (potentially create macro)
+| metadata type=sourcetypes index=*
+| search sourcetype=*aws*
+| stats values(sourcetype)
+
+OR
+#just across all sourcetype with bucket in it
+| metasearch index=* sourcetype=aws:* bucket
+
+#making s3 bucket publically accessible. put instead of get
+index=* sourcetype=aws:cloudtrail *bucket*
+| stats values(eventName)
+
+#check for event name
+eventName=PutBucketAcl
+
+#check recent time
+index=* sourcetype=aws:cloudtrail eventName=PutBucketAcl
+| table _time eventName eventID requestParameters.acl{}
+
+#name s3 bucket public accesible
+bucketName
+
+#search around the sourcetype for keyword
+| metasearch index=* sourcetype=aws:*
+
+#e.g search for txt file in bucket name
+| metasearch index=* sourcetype=aws:* .txt Frothlywebcode
+#remove metasearch
+index=* sourcetype=aws:* txt Frothlywebcode
+
+#check .tar.gz file
+index=* sourcetype=aws:s3:accesslogs bucket_name=Frothlywebcode key=*.tar.gz
+| stats values(key)
+
+#more with fieldformat or eval, to 2 decimal places
+index=* sourcetype=aws:s3:accesslogs bucket_name=Frothlywebcode key=*.tar.gz
+| table _time requester key operation object_size
+| fieldformat object_size2 = round(object_size/1024/1024, 2)
+| sort + _time
+
+#answer, looking for upload amount of tar.gz file with put, says to help look at requester
+
+#coin mining activity, first process with 100% cpu utilization, adn the process
+
+#scope
+| metadata type=sourcetypes index=*
+| stats values(sourcetype)
+
+#next, check wats in there
+| metasearch index=* sourcetype=PerfmonMk:Process
+#rm the metasearch
+index=* sourcetype=PerfmonMk:Process
+`highlevel`
+| search field = *cpu*
+
+# new value: process_cpu_used_percent=100
+
+index=* sourcetype=PerfmonMk:Process  process_cpu_used_percent=100
+| table _time sourcetype host %* Creating_Process_ID ID_Process Elapsed_Time instance
+| sort + _time
+
+#can check *coin* *mine* *mining* *hive*
+
+#ec2 instance launced via auto scaling. how many packages + dependent packages are installed by cloud init script?
+
+#scope
+| metadata type=sourcetypes index=*
+| stats values(sourcetype)
+
+#next
+index=* sourcetype=aws:cloudtrail autoscaling 
+| stats values(eventName)
+
+#next
+index=* sourcetype=aws:cloudtrail autoscaling eventName=RunInstances
+`highlevel`
+| search extracted_values=*autoscaling*
+
+#next
+index=* sourcetype=aws:cloudtrail sourceIPAddress="autoscaling.amazonaws.com" eventName=RunInstances
+`highlevel`
+| stats count
+
+#low amount, just look at them
+
+#next
+index=* sourcetype=aws:cloudtrail sourceIPAddress="autoscaling.amazonaws.com" eventName=RunInstances
+`highlevel`
+| search field=*instanceId*
+
+
+
+#expand
+index=* sourcetype=aws:cloudtrail eventName=RunInstances sourceIPAddress=autoscaling.amazonaws.com
+| fields responseElements.instancesSet.items{}.instanceId
+| table  responseElements.instancesSet.items{}.instanceId
+| mvexpand responseElements.instancesSet.items{}.instanceId
+
+#hint says use cloud-init-output
+index=* sourcetype=cloud-init-output
+
+
+#next (this finds those fields and turns it into a search)
+index=* sourcetype=aws:cloudtrail eventName=RunInstances sourceIPAddress=autoscaling.amazonaws.com
+| fields responseElements.instancesSet.items{}.instanceId
+| stats values(responseElements.instancesSet.items{}.instanceId) as host
+| mvexpand host
+| eval host = "*".host
+| format
+
+#use it as a sub-search, put main search above it
+#this goes through top data, and only go through auto-scaling stuff
+
+index=* sourcetype IN (cloud-init-output)
+[search index=* sourcetype=aws:cloudtrail eventName=RunInstances sourceIPAddress=autoscaling.amazonaws.com
+    | fields responseElements.instancesSet.items{}.instanceId
+    | stats values(responseElements.instancesSet.items{}.instanceId) as host
+    | mvexpand host
+    | eval host = "*".host
+    | format]
+
+
+#use the output of thsoe instance ids as the bottom search and search for keyword packages
+index=* sourcetype IN (cloud-init-output) packages
+*add the instance id format here* (( host) OR (host))
+
+| rex field=_raw *Install\s+(?<packages>\d+) Packages \(\+(?<dependencies>\d+) Dependent packages\)"
+
+#check for packages and dependencies 
+| stats values(packages) as packages values(dependencies) as dependencies by host, sourcetype
+
+#answer is 7,13
+#hint srctype is cloud-init-output
+
+>>>>>> TRY TO AVOID WILDCARD WITH METASEARCH <<<<<<
+
+| metasearch index=* crypto OR cryptocurrency OR coin OR monero OR coinhive
+| top sourcetype
+#pick top srctype n look through n mb drop some keywords
+| metasearch index=* cryptocurrency OR coin OR monero OR coinhive
+| sourcetype=stream:dns
+| top query
+
+#checkout data going to coinhive
+index=* sourcetype=stream:dns query=*coinhive.com*
+| table _time sourcetype host query reply_code _raw
+| sort + _time
+| eventstats values(host)
+
+#short hostname for webserver mining 
+
+#how many dest were mining?
+index=* sourcetype=stream:dns query=*coinhive.com*
+| fields query
+| stats dc(query) as dc_counts values(query) as queries
+
+
+#answer is 6
+
+#find signature ID from SEP
+#jus scope wats available
+| metadata type=sourcetypes index=*
+| search sourcetype IN (*sep*, *symantec*)
+| stats values(sourcetype)
+
+
+#next
+| metadata index=* type=sourcetypes IN (symantec:ep:agent:file, xxxx,xxxx,xxx)
+miner OR coinminer OR cryptominer
+
+#next
+index=* sourcetype IN (symantec:ep:risk:file)
+host = "SEPM"
+
+FAIL
+
+#metasearch doesnt extract fields
+index=* sourcetypes IN (symantec:ep:agent:file, xxxx,xxxx,xxx)
+`highlevel`
+| eval extracted_values = mvfilter(match(extracted_values, "(?i).*miner.*"))
+| search extracted_values=*miner*
+
+
+# search just for those fields
+index=* sourcetypes IN (symantec:ep:agent:file, xxxx,xxxx,xxx)
+CIDS_Signature_string=*JSCoinMiner* OR Event_Description=*JSCoinMiner* 
+| table _time CIDS_Signature_ID signature _raw
+
+# search just for those fields
+index=* sourcetypes IN (symantec:ep:agent:file, xxxx,xxxx,xxx)
+CIDS_Signature_string=*JSCoinMiner* OR Event_Description=*JSCoinMiner* signature=*JSCoinMiner*
+| stats first(CIDS_Signature_ID) earliest(CIDS_Signature_ID)
+
+#answer 30358, gotcha is the first not the earliest
+#hint: symantec:ep:security:file
+
+#according to symantec, was is the coinminer site
+
+index=* sourcetype="symantec:ep:security:file"
+CIDS_Signature_ID=30358
+`highlevel`
+
+#have to google, "jscoinminer download 8"
+broadcom.com attack signatures
+#answer severity: medium
+
+#find the host tht detected/defeating the coinminer
+#check for action or blocked, then check host
+index=* sourcetype="symantec:ep:security:file"
+CIDS_Signature_ID=30358
+`highlevel`
+
+#anwer is BTUN-L
+
+
+
+#what is the fqdn of the win sys running ..
+#scope for win in it
+| metadata type=sourcetypes index=*
+| search sourcetype=*win*
+| stats values(sourcetype)
+
+#next
+index=* sourcetype="xx" OR "xx"
+| fields sourcetype
+| top sourcetype
+
+#get feel for wats in here
+index=* sourcetype="winhostmon"
+| head 5000
+`highlevel`
+| search extracted_values="*Microsoft Windows*"
+
+
+index=* sourcetype="winhostmon" "Microsoft Windows"
+| stats values(host) by os
+
+
+index=* sourcetype="winhostmon" "Microsoft Windows" host="BSTOLL-L"
+| fields _raw
+| rex field=_raw "(?<check>BSTOLL-L\..+)"
+| stats values(check)
+#answer BSTOLL-L.bot.ly
+
+#219, look for aws access keys, repo, compromised , etc
+#gona be through email for case ID
+
+index=* sourcetype="stream:smtp" (AWS OR "Amazon Web Services") (Compromised OR Compromise)
+
+
+#220 aws access key, wats the key thts leaked to the external repo
+index=* sourcetype="stream:smtp" (AWS OR "Amazon Web Services") (Compromised OR Compromise)
+#folllow link to github
+check access key
+#answer on github, Bx/8
+
+
+#search aws
+index=* sourcetype=aws:cloudtrail <access key>
+`highlevel1
+| search extracted_values="*acess key*"
+
+#next
+index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=<access key> eventName="CreateAccessKey"
+`highlevel`
+| search extracted_values="*acess key*"
+
+#ctrl f for resource
+#answer nullweb_admin
+
+
+#222, wats full user agent str of app req
+index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=<access key> eventName="DescribeAccountAttributes"
+`highlevel`
+
+#ctrl f for user agent, 
+#answer is elastic wolf
+
+#223, launch ubuntu cloud image (ami). wats the first attempt.
+
+index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=<access key> OR userName="web_admin"
+`highlevel`
+
+#next
+index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=<access key> OR userName="web_admin" eventName IN (RunInstances)
+`highlevel` 
+
+index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=<access key> OR userName="web_admin" eventName IN (RunInstances)
+| stats first("requestParameters.instancesSet.items().imageID")
+
+
+#convert name to aws , google aws "ami-9xxxx"
+"ubuntu cloud finder"
+
+ 
+
 
 
