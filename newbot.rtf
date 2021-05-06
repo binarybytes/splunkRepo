@@ -1,0 +1,72 @@
+
+
+index=botsv1 earliest=0
+
+
+| lookup open_nameservers ip AS dest_ip
+| search name=*.google.com 
+| search name!=*
+
+
+
+|tstats count where index=* by sourcetype
+| sort - count
+| table count sourcetype
+
+
+
+#quick all search for srctypes
+| metadata type=sourcetypes index=*
+| stats values(sourcetype)
+
+
+
+#returns sourcetypes+evnt count + search for logins (login) or (cloudtrail)
+| metasearch index=* sourcetype=aws:*
+| fields user*
+| head 1000
+
+#comma separated users list
+index=* sourcetype=aws:cloudtrail user_type=*IAMUser*
+| stats values(userName) as users
+| nomv u
+| red mode=sed field=u "s/\s/ ,/g"
+
+
+#useful
+| fieldsummary
+
+
+| inputlookup example.csv where Number=200
+
+#check awscloud trail logs
+| metasearch index=* sourcetype=aws:cloudtrail
+
+#part 2 for extracted fields
+| index=* sourcetype=aws:cloudtrail
+| head 1000
+| fieldsummary
+| search values!="[]"
+| fields field values 
+| rex field=values max_match=0 "\{\"value\":\"(?<extracted_values>[^\"]+)\""
+| fields field extracted_values
+
+
+#throw into macro
+settings>advanced search>search macros>new search macros
+name:highlevel
+definition: Code
+save.
+
+#example of highlevel
+| index=* sourcetype=aws:cloudtrail
+| head 1000
+| `highlevel`
+| search field = *mfa*
+
+
+#check aws cloudtrail + exclude console login activity + find if MFA is used
+index=* sourcetype=aws:cloudtrail additionalEventData.MFAUser=* OR userIdentity.sessionContext.attributes.mfaAuthenticated=*
+| stats values(additionalEventData.MFAUser) values(userIdentity.sessionContext.attributes.mfaAuthenticated) by eventType
+
+
