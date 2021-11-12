@@ -1,0 +1,53 @@
+Ultimately, it is how tstats searches against these second-level indexes that gives you all the performance gains that come with accelerated datamodels.
+
+| tstats also has the advantage of accepting OR statements in the search so if you are using multi-select tokens they will work. I couldn't get this to work with pivot.
+
+The notion that one is better than the other misses the point. They are all useful, and depending on the use case, one may be better suited than another to a particular task. A ninja knows when it's best to use one over another.
+
+tstats is very useful for querying indexed fields outside the context of datamodel use (e.g. | tstats dc(host) WHERE index=* OR index=_* BY _time,index span=15m) and as seen in the example, can take an arbitrary time span aggregation.
+
+ProTip: Copy this |tstats search instead of the | pivot that to your final dashboard.
+
+it's the "optimized search" you grab from Job Inspector. This is a brilliant Pro Tip --- and when I did it I noticed there were several iterations of the search using tstats. that's the one you want.
+
+
+
+
+--------------------
+
+
+tsidx (time series index) files are created as part of the indexing pipeline processing. The incoming data is parsed into terms (think 'words' delimited by certain characters) and this list of terms is then stored along with offset (a number) that represents the location in the rawdata file (journal.gz) that the event data is written to.
+It is the exact same thing as an index in a book, except it is a complete index rather than a subset. If every word in a book would be in the index, the index would be way larger than the book itself, which is exactly what happens in Splunk. If you look at an index bucket directory on disk, you will find that the size for the index and other metadata files often exceeds the size of the compressed raw data.
+
+Searches using tstats only use the tsidx files, i.e. Splunk does not have to read, unzip and search the journal.gz files to create the search results, which is obviously orders of magnitudes faster.
+
+The following two searches are semantically identical and should return the same exact results on your Splunk instance. Pick "Previous week" from the timerange picker and then take a look at how long they each take in Job Inspector once they are complete.
+
+index=_internal  | stats count by sourcetype
+
+Equivalent tstats search:
+| tstats count where index=_internal by sourcetype 
+
+In my environment, the first one takes 115s, the tstats search completes in 4s.
+
+Note that this only works for indexed fields, not for fields extracted at search time. By default that is _time, source, host and sourcetype.
+
+Hope that makes sense.
+BTW, you can use the walklex command to take a look at what's in a given tsidx file.
+
+
+
+--------------------
+
+IF The query starts with tstats, a generating command which returns statistical data based on analysis of the tsidx files, not the events themselves. 
+
+//HIST TIMEFORMAT="%d/%m/%y %T " history | grep '[a]pt update'
+
+------------------------
+
+
+
+
+
+
+
